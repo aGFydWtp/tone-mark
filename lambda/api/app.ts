@@ -14,8 +14,12 @@ const staticAllowedOrigins = [
   "http://localhost:5174",
   "https://here.now",
 ];
-// Any subdomain of here.now over https, e.g. https://app.here.now.
-const hereNowSubdomain = /^https:\/\/([a-z0-9-]+\.)+here\.now$/;
+// Any subdomain of here.now or tools.mockht.net over https,
+// e.g. https://app.here.now, https://app.tools.mockht.net.
+const allowedOriginPatterns = [
+  /^https:\/\/([a-z0-9-]+\.)+here\.now$/,
+  /^https:\/\/([a-z0-9-]+\.)+tools\.mockht\.net$/,
+];
 
 const ErrorSchema = z
   .object({
@@ -463,7 +467,7 @@ function resolveAllowedOrigin(origin: string): string {
   if (staticAllowedOrigins.includes(origin)) {
     return origin;
   }
-  return hereNowSubdomain.test(origin) ? origin : "";
+  return allowedOriginPatterns.some((pattern) => pattern.test(origin)) ? origin : "";
 }
 
 function errorResponse(description: string) {

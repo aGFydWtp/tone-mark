@@ -280,6 +280,7 @@ test("CORS preflight allows here.now, its subdomains, and localhost", async () =
     "https://here.now",
     "https://app.here.now",
     "https://a.b.here.now",
+    "https://app.tools.mockht.net",
     "http://localhost:5173",
   ]) {
     const response = await app.request("/scores", {

@@ -29,6 +29,7 @@ export class ToneMarkStack extends cdk.Stack {
       "http://localhost:5174",
       "https://here.now",
       "https://*.here.now",
+      "https://*.tools.mockht.net",
     ];
 
     const scoreBucket = new s3.Bucket(this, "ScoreBucket", {
