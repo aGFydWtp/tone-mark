@@ -29,6 +29,8 @@ test("GET /doc returns OpenAPI document", async () => {
   assert.ok(body.paths["/scores/upload-url"]);
   assert.ok(body.paths["/scores"]);
   assert.ok(body.paths["/scores/{score_id}"]);
+  assert.ok(body.paths["/scores/{score_id}/musicxml-url"]);
+  assert.ok(body.paths["/scores/{score_id}/musicxml"]);
 });
 
 test("GET /ui returns Swagger UI HTML", async () => {
@@ -124,6 +126,100 @@ test("GET /scores/:score_id returns 404 when score is missing", async () => {
   });
 });
 
+test("GET /scores/:score_id/musicxml-url returns 404 when score is missing", async () => {
+  const { app } = createApp({
+    scoreService: createMockScoreService({
+      async createMusicXmlDownloadUrl() {
+        return {
+          ok: false,
+          error: "Score not found.",
+        };
+      },
+    }),
+  });
+
+  const response = await app.request("/scores/score_missing/musicxml-url");
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), {
+    error: "Score not found.",
+  });
+});
+
+test("GET /scores/:score_id/musicxml-url returns 404 when MusicXML is missing", async () => {
+  const { app } = createApp({
+    scoreService: createMockScoreService({
+      async createMusicXmlDownloadUrl() {
+        return {
+          ok: false,
+          error: "MusicXML not found.",
+        };
+      },
+    }),
+  });
+
+  const response = await app.request("/scores/score_20260520124530_a1b2c3d4e5f6/musicxml-url");
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), {
+    error: "MusicXML not found.",
+  });
+});
+
+test("GET /scores/:score_id/musicxml-url returns download URL payload", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  const response = await app.request("/scores/score_20260520124530_a1b2c3d4e5f6/musicxml-url");
+  const body = (await response.json()) as {
+    score_id: string;
+    musicxml_key: string;
+    download_url: string;
+    expires_in: number;
+  };
+
+  assert.equal(response.status, 200);
+  assert.equal(body.score_id, "score_20260520124530_a1b2c3d4e5f6");
+  assert.equal(body.musicxml_key, "scores/score_20260520124530_a1b2c3d4e5f6/result.musicxml");
+  assert.equal(body.download_url, "https://example.com/musicxml");
+  assert.equal(body.expires_in, 900);
+});
+
+test("PUT /scores/:score_id/musicxml rejects empty body", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  const response = await app.request("/scores/score_20260520124530_a1b2c3d4e5f6/musicxml", {
+    method: "PUT",
+    headers: {
+      "content-type": "application/vnd.recordare.musicxml+xml",
+    },
+    body: "",
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    error: "Invalid MusicXML.",
+  });
+});
+
+test("PUT /scores/:score_id/musicxml returns saved MusicXML payload", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  const response = await app.request("/scores/score_20260520124530_a1b2c3d4e5f6/musicxml", {
+    method: "PUT",
+    headers: {
+      "content-type": "application/vnd.recordare.musicxml+xml",
+    },
+    body: '<?xml version="1.0"?><score-partwise version="4.0"></score-partwise>',
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    score_id: "score_20260520124530_a1b2c3d4e5f6",
+    status: "needs_review",
+    musicxml_key: "scores/score_20260520124530_a1b2c3d4e5f6/result.musicxml",
+  });
+});
+
 function createMockScoreService(overrides: Partial<ScoreService> = {}): ScoreService {
   return {
     async createUploadUrl(input) {
@@ -173,6 +269,34 @@ function createMockScoreService(overrides: Partial<ScoreService> = {}): ScoreSer
         created_at: "2026-05-20T00:00:00.000Z",
         updated_at: "2026-05-20T00:00:00.000Z",
       } satisfies ScoreJob;
+    },
+    async createMusicXmlDownloadUrl(scoreId) {
+      return {
+        ok: true,
+        value: {
+          score_id: scoreId,
+          musicxml_key: `scores/${scoreId}/result.musicxml`,
+          download_url: "https://example.com/musicxml",
+          expires_in: 900,
+        },
+      };
+    },
+    async putMusicXml(scoreId, musicXml) {
+      if (!musicXml.trim()) {
+        return {
+          ok: false,
+          error: "Invalid MusicXML.",
+        };
+      }
+
+      return {
+        ok: true,
+        value: {
+          score_id: scoreId,
+          status: "needs_review",
+          musicxml_key: `scores/${scoreId}/result.musicxml`,
+        },
+      };
     },
     ...overrides,
   };

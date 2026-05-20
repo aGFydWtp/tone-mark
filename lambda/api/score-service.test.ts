@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { SendMessageCommand } from "@aws-sdk/client-sqs";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createAwsScoreService } from "./score-service.js";
@@ -120,6 +120,159 @@ test("createUploadUrl passes content type to S3 presigner command", async () => 
   });
 
   assert.equal(result.ok, true);
+});
+
+test("createMusicXmlDownloadUrl signs existing MusicXML object", async () => {
+  const service = createAwsScoreService({
+    bucketName: "scores-bucket",
+    tableName: "score_jobs",
+    omrQueueUrl: "https://sqs.example.com/omr",
+    dynamoClient: {
+      async send(command) {
+        assert.ok(command instanceof GetCommand);
+        return {
+          Item: {
+            pk: "SCORE#score_1",
+            sk: "META",
+            score_id: "score_1",
+            status: "needs_review",
+            original_key: "scores/score_1/original.pdf",
+            musicxml_key: "scores/score_1/result.musicxml",
+            created_at: "2026-05-20T00:00:00.000Z",
+            updated_at: "2026-05-20T00:00:00.000Z",
+          },
+        };
+      },
+    },
+    sqsClient: createRecordingClient([]),
+    signUrl: async (_client, command, options) => {
+      assert.ok(command instanceof GetObjectCommand);
+      assert.equal(command.input.Bucket, "scores-bucket");
+      assert.equal(command.input.Key, "scores/score_1/result.musicxml");
+      assert.equal(options.expiresIn, 900);
+      return "https://example.com/musicxml";
+    },
+  });
+
+  const result = await service.createMusicXmlDownloadUrl("score_1");
+
+  assert.deepEqual(result, {
+    ok: true,
+    value: {
+      score_id: "score_1",
+      musicxml_key: "scores/score_1/result.musicxml",
+      download_url: "https://example.com/musicxml",
+      expires_in: 900,
+    },
+  });
+});
+
+test("createMusicXmlDownloadUrl returns missing MusicXML error when key is absent", async () => {
+  const service = createAwsScoreService({
+    bucketName: "scores-bucket",
+    tableName: "score_jobs",
+    omrQueueUrl: "https://sqs.example.com/omr",
+    dynamoClient: {
+      async send() {
+        return {
+          Item: {
+            pk: "SCORE#score_1",
+            sk: "META",
+            score_id: "score_1",
+            status: "created",
+            original_key: "scores/score_1/original.pdf",
+            created_at: "2026-05-20T00:00:00.000Z",
+            updated_at: "2026-05-20T00:00:00.000Z",
+          },
+        };
+      },
+    },
+    sqsClient: createRecordingClient([]),
+    signUrl: async () => "https://example.com/musicxml",
+  });
+
+  const result = await service.createMusicXmlDownloadUrl("score_1");
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "MusicXML not found.",
+  });
+});
+
+test("putMusicXml writes S3 object and updates DynamoDB status", async () => {
+  const dynamoCommands: object[] = [];
+  const s3Commands: object[] = [];
+  const service = createAwsScoreService({
+    bucketName: "scores-bucket",
+    tableName: "score_jobs",
+    omrQueueUrl: "https://sqs.example.com/omr",
+    s3Client: createRecordingClient(s3Commands) as never,
+    dynamoClient: {
+      async send(command) {
+        dynamoCommands.push(command);
+        if (command instanceof GetCommand) {
+          return {
+            Item: {
+              pk: "SCORE#score_1",
+              sk: "META",
+              score_id: "score_1",
+              status: "needs_review",
+              original_key: "scores/score_1/original.pdf",
+              created_at: "2026-05-20T00:00:00.000Z",
+              updated_at: "2026-05-20T00:00:00.000Z",
+            },
+          };
+        }
+        return {};
+      },
+    },
+    sqsClient: createRecordingClient([]),
+    signUrl: async () => "https://example.com/upload",
+    now: () => new Date("2026-05-20T12:45:30.000Z"),
+  });
+
+  const result = await service.putMusicXml(
+    "score_1",
+    '<?xml version="1.0"?><score-partwise version="4.0"></score-partwise>',
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    value: {
+      score_id: "score_1",
+      status: "needs_review",
+      musicxml_key: "scores/score_1/result.musicxml",
+    },
+  });
+  assert.equal(s3Commands.length, 1);
+  assert.ok(s3Commands[0] instanceof PutObjectCommand);
+  assert.equal((s3Commands[0] as PutObjectCommand).input.Key, "scores/score_1/result.musicxml");
+  assert.equal(dynamoCommands.length, 2);
+  assert.ok(dynamoCommands[0] instanceof GetCommand);
+  assert.ok(dynamoCommands[1] instanceof UpdateCommand);
+});
+
+test("putMusicXml rejects invalid MusicXML before writing", async () => {
+  const dynamoCommands: object[] = [];
+  const s3Commands: object[] = [];
+  const service = createAwsScoreService({
+    bucketName: "scores-bucket",
+    tableName: "score_jobs",
+    omrQueueUrl: "https://sqs.example.com/omr",
+    s3Client: createRecordingClient(s3Commands) as never,
+    dynamoClient: createRecordingClient(dynamoCommands),
+    sqsClient: createRecordingClient([]),
+    signUrl: async () => "https://example.com/upload",
+  });
+
+  const result = await service.putMusicXml("score_1", "");
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: "Invalid MusicXML.",
+  });
+  assert.equal(s3Commands.length, 0);
+  assert.equal(dynamoCommands.length, 0);
 });
 
 function createRecordingClient(commands: object[]) {

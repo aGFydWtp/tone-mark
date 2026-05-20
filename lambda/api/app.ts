@@ -73,6 +73,37 @@ const CreateScoreJobResponseSchema = z
   })
   .openapi("CreateScoreJobResponse");
 
+const MusicXmlUrlResponseSchema = z
+  .object({
+    score_id: z.string().openapi({
+      example: "score_20260520124530_a1b2c3d4e5f6",
+    }),
+    musicxml_key: z.string().openapi({
+      example: "scores/score_20260520124530_a1b2c3d4e5f6/result.musicxml",
+    }),
+    download_url: z.string().url().openapi({
+      example: "https://example-bucket.s3.ap-northeast-1.amazonaws.com/...",
+    }),
+    expires_in: z.number().int().positive().openapi({
+      example: 900,
+    }),
+  })
+  .openapi("MusicXmlUrlResponse");
+
+const PutMusicXmlResponseSchema = z
+  .object({
+    score_id: z.string().openapi({
+      example: "score_20260520124530_a1b2c3d4e5f6",
+    }),
+    status: z.literal("needs_review").openapi({
+      example: "needs_review",
+    }),
+    musicxml_key: z.string().openapi({
+      example: "scores/score_20260520124530_a1b2c3d4e5f6/result.musicxml",
+    }),
+  })
+  .openapi("PutMusicXmlResponse");
+
 const ScoreParamsSchema = z.object({
   score_id: z
     .string()
@@ -207,6 +238,70 @@ const getScoreJobRoute = createRoute({
   },
 });
 
+const createMusicXmlDownloadUrlRoute = createRoute({
+  method: "get",
+  path: "/scores/{score_id}/musicxml-url",
+  request: {
+    params: ScoreParamsSchema,
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: MusicXmlUrlResponseSchema,
+        },
+      },
+      description: "Created S3 MusicXML download URL.",
+    },
+    404: errorResponse("Score or MusicXML not found."),
+    500: errorResponse("Unexpected server error."),
+  },
+});
+
+const putMusicXmlRoute = createRoute({
+  method: "put",
+  path: "/scores/{score_id}/musicxml",
+  request: {
+    params: ScoreParamsSchema,
+    body: {
+      content: {
+        "application/vnd.recordare.musicxml+xml": {
+          schema: z.string().openapi({
+            example:
+              '<?xml version="1.0" encoding="UTF-8"?><score-partwise version="4.0"></score-partwise>',
+          }),
+        },
+        "application/xml": {
+          schema: z.string().openapi({
+            example:
+              '<?xml version="1.0" encoding="UTF-8"?><score-partwise version="4.0"></score-partwise>',
+          }),
+        },
+        "text/xml": {
+          schema: z.string().openapi({
+            example:
+              '<?xml version="1.0" encoding="UTF-8"?><score-partwise version="4.0"></score-partwise>',
+          }),
+        },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: PutMusicXmlResponseSchema,
+        },
+      },
+      description: "Saved MusicXML.",
+    },
+    400: errorResponse("Invalid MusicXML."),
+    404: errorResponse("Score not found."),
+    500: errorResponse("Unexpected server error."),
+  },
+});
+
 export function createApp({ scoreService }: AppDependencies) {
   const app = new OpenAPIHono({
     defaultHook: (result, c) => {
@@ -245,6 +340,27 @@ export function createApp({ scoreService }: AppDependencies) {
     }
 
     return c.json(score, 200);
+  });
+
+  app.openapi(createMusicXmlDownloadUrlRoute, async (c) => {
+    const { score_id: scoreId } = c.req.valid("param");
+    const result = await scoreService.createMusicXmlDownloadUrl(scoreId);
+    if (!result.ok) {
+      return c.json({ error: result.error }, 404);
+    }
+
+    return c.json(result.value, 200);
+  });
+
+  app.openapi(putMusicXmlRoute, async (c) => {
+    const { score_id: scoreId } = c.req.valid("param");
+    const result = await scoreService.putMusicXml(scoreId, await c.req.text());
+    if (!result.ok) {
+      const status = result.error === "Score not found." ? 404 : 400;
+      return c.json({ error: result.error }, status);
+    }
+
+    return c.json(result.value, 200);
   });
 
   app.doc("/doc", {

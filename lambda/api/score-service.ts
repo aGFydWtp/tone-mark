@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import {
   DynamoDBDocumentClient,
@@ -12,6 +12,8 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const scoreMetaSortKey = "META";
 const uploadUrlExpiresInSeconds = 900;
+const musicXmlDownloadUrlExpiresInSeconds = uploadUrlExpiresInSeconds;
+const musicXmlContentType = "application/vnd.recordare.musicxml+xml; charset=utf-8";
 
 const contentTypeToExtension = {
   "application/pdf": "pdf",
@@ -56,10 +58,27 @@ export type CreateScoreJobOutput = {
   status: "queued";
 };
 
+export type CreateMusicXmlDownloadUrlOutput = {
+  score_id: string;
+  musicxml_key: string;
+  download_url: string;
+  expires_in: number;
+};
+
+export type PutMusicXmlOutput = {
+  score_id: string;
+  status: "needs_review";
+  musicxml_key: string;
+};
+
 export type ScoreService = {
   createUploadUrl(input: CreateUploadUrlInput): Promise<ServiceResult<CreateUploadUrlOutput>>;
   createScoreJob(input: CreateScoreJobInput): Promise<ServiceResult<CreateScoreJobOutput>>;
   getScoreJob(scoreId: string): Promise<ScoreJob | null>;
+  createMusicXmlDownloadUrl(
+    scoreId: string,
+  ): Promise<ServiceResult<CreateMusicXmlDownloadUrlOutput>>;
+  putMusicXml(scoreId: string, musicXml: string): Promise<ServiceResult<PutMusicXmlOutput>>;
 };
 
 type SendableClient = {
@@ -75,7 +94,7 @@ type CreateAwsScoreServiceOptions = {
   sqsClient?: SendableClient;
   signUrl?: (
     client: S3Client,
-    command: PutObjectCommand,
+    command: PutObjectCommand | GetObjectCommand,
     options: { expiresIn: number },
   ) => Promise<string>;
   now?: () => Date;
@@ -219,6 +238,107 @@ export function createAwsScoreService(options: CreateAwsScoreServiceOptions = {}
 
       return response.Item ?? null;
     },
+
+    async createMusicXmlDownloadUrl(scoreId) {
+      const score = await this.getScoreJob(scoreId);
+      if (!score) {
+        return {
+          ok: false,
+          error: "Score not found.",
+        };
+      }
+
+      if (!score.musicxml_key) {
+        return {
+          ok: false,
+          error: "MusicXML not found.",
+        };
+      }
+
+      const downloadUrl = await signUrl(
+        s3Client,
+        new GetObjectCommand({
+          Bucket: bucketName,
+          Key: score.musicxml_key,
+        }),
+        { expiresIn: musicXmlDownloadUrlExpiresInSeconds },
+      );
+
+      return {
+        ok: true,
+        value: {
+          score_id: score.score_id,
+          musicxml_key: score.musicxml_key,
+          download_url: downloadUrl,
+          expires_in: musicXmlDownloadUrlExpiresInSeconds,
+        },
+      };
+    },
+
+    async putMusicXml(scoreId, musicXml) {
+      if (!isNonEmptyString(scoreId)) {
+        return {
+          ok: false,
+          error: "Score not found.",
+        };
+      }
+
+      if (!isLikelyMusicXml(musicXml)) {
+        return {
+          ok: false,
+          error: "Invalid MusicXML.",
+        };
+      }
+
+      const score = await this.getScoreJob(scoreId);
+      if (!score) {
+        return {
+          ok: false,
+          error: "Score not found.",
+        };
+      }
+
+      const musicXmlKey = createMusicXmlObjectKey(scoreId);
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: bucketName,
+          Key: musicXmlKey,
+          Body: musicXml,
+          ContentType: musicXmlContentType,
+        }),
+      );
+
+      const updatedAt = now().toISOString();
+      await dynamoClient.send(
+        new UpdateCommand({
+          TableName: tableName,
+          Key: {
+            pk: scorePartitionKey(scoreId),
+            sk: scoreMetaSortKey,
+          },
+          UpdateExpression:
+            "SET #status = :status, musicxml_key = :musicXmlKey, updated_at = :updatedAt REMOVE error_message",
+          ConditionExpression: "attribute_exists(pk)",
+          ExpressionAttributeNames: {
+            "#status": "status",
+          },
+          ExpressionAttributeValues: {
+            ":status": "needs_review",
+            ":musicXmlKey": musicXmlKey,
+            ":updatedAt": updatedAt,
+          },
+        }),
+      );
+
+      return {
+        ok: true,
+        value: {
+          score_id: scoreId,
+          status: "needs_review",
+          musicxml_key: musicXmlKey,
+        },
+      };
+    },
   };
 }
 
@@ -234,6 +354,10 @@ export function createScoreId(date = new Date()): string {
 
 function createOriginalObjectKey(scoreId: string, contentType: AllowedContentType): string {
   return `scores/${scoreId}/original.${contentTypeToExtension[contentType]}`;
+}
+
+function createMusicXmlObjectKey(scoreId: string): string {
+  return `scores/${scoreId}/result.musicxml`;
 }
 
 function validateCreateUploadUrlInput(
@@ -294,6 +418,18 @@ function isAllowedContentType(value: unknown): value is AllowedContentType {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isLikelyMusicXml(value: unknown): value is string {
+  if (!isNonEmptyString(value)) {
+    return false;
+  }
+
+  const trimmed = value.trim();
+  return (
+    trimmed.startsWith("<") &&
+    (trimmed.includes("<score-partwise") || trimmed.includes("<score-timewise"))
+  );
 }
 
 function scorePartitionKey(scoreId: string): string {
