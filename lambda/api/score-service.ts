@@ -14,6 +14,7 @@ const scoreMetaSortKey = "META";
 const uploadUrlExpiresInSeconds = 900;
 const musicXmlDownloadUrlExpiresInSeconds = uploadUrlExpiresInSeconds;
 const musicXmlContentType = "application/vnd.recordare.musicxml+xml; charset=utf-8";
+const jsonContentType = "application/json; charset=utf-8";
 
 const contentTypeToExtension = {
   "application/pdf": "pdf",
@@ -37,9 +38,11 @@ export type ScoreJob = {
   pk: string;
   sk: typeof scoreMetaSortKey;
   score_id: string;
-  status: "created" | "queued" | "processing_omr" | "needs_review" | "failed";
+  status: "created" | "queued" | "processing_omr" | "needs_review" | "analyzed" | "failed";
   original_key: string;
   musicxml_key?: string;
+  notes_json_key?: string;
+  pitch_counts_key?: string;
   error_message?: string | null;
   created_at: string;
   updated_at: string;
@@ -71,6 +74,24 @@ export type PutMusicXmlOutput = {
   musicxml_key: string;
 };
 
+export type MusicXmlNote = {
+  pitch: string;
+  step: string;
+  alter: number;
+  octave: number;
+  part_id?: string;
+  measure_number?: string;
+  note_index: number;
+};
+
+export type AnalyzeScoreOutput = {
+  score_id: string;
+  status: "analyzed";
+  notes_json_key: string;
+  pitch_counts_key: string;
+  pitch_counts: Record<string, number>;
+};
+
 export type ScoreService = {
   createUploadUrl(input: CreateUploadUrlInput): Promise<ServiceResult<CreateUploadUrlOutput>>;
   createScoreJob(input: CreateScoreJobInput): Promise<ServiceResult<CreateScoreJobOutput>>;
@@ -79,6 +100,7 @@ export type ScoreService = {
     scoreId: string,
   ): Promise<ServiceResult<CreateMusicXmlDownloadUrlOutput>>;
   putMusicXml(scoreId: string, musicXml: string): Promise<ServiceResult<PutMusicXmlOutput>>;
+  analyzeScore(scoreId: string): Promise<ServiceResult<AnalyzeScoreOutput>>;
 };
 
 type SendableClient = {
@@ -339,6 +361,100 @@ export function createAwsScoreService(options: CreateAwsScoreServiceOptions = {}
         },
       };
     },
+
+    async analyzeScore(scoreId) {
+      if (!isNonEmptyString(scoreId)) {
+        return {
+          ok: false,
+          error: "Score not found.",
+        };
+      }
+
+      const score = await this.getScoreJob(scoreId);
+      if (!score) {
+        return {
+          ok: false,
+          error: "Score not found.",
+        };
+      }
+
+      if (!score.musicxml_key) {
+        return {
+          ok: false,
+          error: "MusicXML not found.",
+        };
+      }
+
+      const musicXmlResponse = await s3Client.send(
+        new GetObjectCommand({
+          Bucket: bucketName,
+          Key: score.musicxml_key,
+        }),
+      );
+      const musicXml = await bodyToString((musicXmlResponse as { Body?: unknown }).Body);
+      if (!isLikelyMusicXml(musicXml)) {
+        return {
+          ok: false,
+          error: "Invalid MusicXML.",
+        };
+      }
+
+      const notes = extractMusicXmlNotes(musicXml);
+      const pitchCounts = createPitchCounts(notes);
+      const notesJsonKey = createNotesJsonObjectKey(scoreId);
+      const pitchCountsKey = createPitchCountsObjectKey(scoreId);
+
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: bucketName,
+          Key: notesJsonKey,
+          Body: JSON.stringify({ score_id: scoreId, notes }, null, 2),
+          ContentType: jsonContentType,
+        }),
+      );
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: bucketName,
+          Key: pitchCountsKey,
+          Body: JSON.stringify({ score_id: scoreId, pitch_counts: pitchCounts }, null, 2),
+          ContentType: jsonContentType,
+        }),
+      );
+
+      const updatedAt = now().toISOString();
+      await dynamoClient.send(
+        new UpdateCommand({
+          TableName: tableName,
+          Key: {
+            pk: scorePartitionKey(scoreId),
+            sk: scoreMetaSortKey,
+          },
+          UpdateExpression:
+            "SET #status = :status, notes_json_key = :notesJsonKey, pitch_counts_key = :pitchCountsKey, updated_at = :updatedAt REMOVE error_message",
+          ConditionExpression: "attribute_exists(pk)",
+          ExpressionAttributeNames: {
+            "#status": "status",
+          },
+          ExpressionAttributeValues: {
+            ":status": "analyzed",
+            ":notesJsonKey": notesJsonKey,
+            ":pitchCountsKey": pitchCountsKey,
+            ":updatedAt": updatedAt,
+          },
+        }),
+      );
+
+      return {
+        ok: true,
+        value: {
+          score_id: scoreId,
+          status: "analyzed",
+          notes_json_key: notesJsonKey,
+          pitch_counts_key: pitchCountsKey,
+          pitch_counts: pitchCounts,
+        },
+      };
+    },
   };
 }
 
@@ -358,6 +474,14 @@ function createOriginalObjectKey(scoreId: string, contentType: AllowedContentTyp
 
 function createMusicXmlObjectKey(scoreId: string): string {
   return `scores/${scoreId}/result.musicxml`;
+}
+
+function createNotesJsonObjectKey(scoreId: string): string {
+  return `scores/${scoreId}/notes.json`;
+}
+
+function createPitchCountsObjectKey(scoreId: string): string {
+  return `scores/${scoreId}/pitch_counts.json`;
 }
 
 function validateCreateUploadUrlInput(
@@ -430,6 +554,135 @@ function isLikelyMusicXml(value: unknown): value is string {
     trimmed.startsWith("<") &&
     (trimmed.includes("<score-partwise") || trimmed.includes("<score-timewise"))
   );
+}
+
+function extractMusicXmlNotes(musicXml: string): MusicXmlNote[] {
+  const notes: MusicXmlNote[] = [];
+  let noteIndex = 0;
+
+  for (const partMatch of musicXml.matchAll(/<part(\s[^>]*)?>([\s\S]*?)<\/part>/g)) {
+    const partId = getAttribute(partMatch[1] ?? "", "id");
+    const partBody = partMatch[2] ?? "";
+
+    for (const measureMatch of partBody.matchAll(/<measure\b([^>]*)>([\s\S]*?)<\/measure>/g)) {
+      const measureNumber = getAttribute(measureMatch[1] ?? "", "number");
+      const measureBody = measureMatch[2] ?? "";
+
+      for (const noteMatch of measureBody.matchAll(/<note\b[^>]*>([\s\S]*?)<\/note>/g)) {
+        const noteBody = noteMatch[1] ?? "";
+        const pitchBody = matchTagBody(noteBody, "pitch");
+        if (!pitchBody) {
+          continue;
+        }
+
+        const step = matchTagBody(pitchBody, "step");
+        const octaveText = matchTagBody(pitchBody, "octave");
+        if (!step || !octaveText) {
+          continue;
+        }
+
+        const octave = Number.parseInt(octaveText, 10);
+        if (!Number.isInteger(octave)) {
+          continue;
+        }
+
+        const alter = Number.parseInt(matchTagBody(pitchBody, "alter") ?? "0", 10);
+        const normalizedAlter = Number.isInteger(alter) ? alter : 0;
+
+        notes.push({
+          pitch: `${step}${alterToAccidental(normalizedAlter)}${octave}`,
+          step,
+          alter: normalizedAlter,
+          octave,
+          part_id: partId,
+          measure_number: measureNumber,
+          note_index: noteIndex,
+        });
+        noteIndex += 1;
+      }
+    }
+  }
+
+  return notes;
+}
+
+function createPitchCounts(notes: MusicXmlNote[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const note of notes) {
+    counts[note.pitch] = (counts[note.pitch] ?? 0) + 1;
+  }
+
+  return Object.fromEntries(
+    Object.entries(counts).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function matchTagBody(xml: string, tagName: string): string | null {
+  const match = xml.match(new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`));
+  return match?.[1]?.trim() ?? null;
+}
+
+function getAttribute(attributes: string, attributeName: string): string | undefined {
+  const match = attributes.match(new RegExp(`${attributeName}="([^"]*)"`));
+  return match?.[1];
+}
+
+function alterToAccidental(alter: number): string {
+  if (alter === -2) {
+    return "bb";
+  }
+  if (alter === -1) {
+    return "b";
+  }
+  if (alter === 1) {
+    return "#";
+  }
+  if (alter === 2) {
+    return "##";
+  }
+  if (alter === 0) {
+    return "";
+  }
+
+  return alter > 0 ? `+${alter}` : String(alter);
+}
+
+async function bodyToString(body: unknown): Promise<string> {
+  if (!body) {
+    return "";
+  }
+  if (typeof body === "string") {
+    return body;
+  }
+  if (body instanceof Uint8Array) {
+    return new TextDecoder().decode(body);
+  }
+  if (hasTransformToString(body)) {
+    return body.transformToString();
+  }
+  if (isAsyncIterable(body)) {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of body) {
+      chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
+    }
+
+    return new TextDecoder().decode(Buffer.concat(chunks));
+  }
+
+  return String(body);
+}
+
+function hasTransformToString(body: unknown): body is { transformToString(): Promise<string> } {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    "transformToString" in body &&
+    typeof body.transformToString === "function"
+  );
+}
+
+function isAsyncIterable(body: unknown): body is AsyncIterable<Uint8Array | string> {
+  return typeof body === "object" && body !== null && Symbol.asyncIterator in body;
 }
 
 function scorePartitionKey(scoreId: string): string {

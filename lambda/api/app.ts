@@ -15,17 +15,6 @@ const ErrorSchema = z
   })
   .openapi("Error");
 
-const HealthResponseSchema = z
-  .object({
-    ok: z.boolean().openapi({
-      example: true,
-    }),
-    service: z.string().openapi({
-      example: "tone-mark-api",
-    }),
-  })
-  .openapi("HealthResponse");
-
 const UploadUrlRequestSchema = z
   .object({
     filename: z.string().min(1).openapi({
@@ -104,6 +93,29 @@ const PutMusicXmlResponseSchema = z
   })
   .openapi("PutMusicXmlResponse");
 
+const AnalyzeScoreResponseSchema = z
+  .object({
+    score_id: z.string().openapi({
+      example: "score_20260520124530_a1b2c3d4e5f6",
+    }),
+    status: z.literal("analyzed").openapi({
+      example: "analyzed",
+    }),
+    notes_json_key: z.string().openapi({
+      example: "scores/score_20260520124530_a1b2c3d4e5f6/notes.json",
+    }),
+    pitch_counts_key: z.string().openapi({
+      example: "scores/score_20260520124530_a1b2c3d4e5f6/pitch_counts.json",
+    }),
+    pitch_counts: z.record(z.string(), z.number().int().nonnegative()).openapi({
+      example: {
+        C4: 3,
+        C5: 1,
+      },
+    }),
+  })
+  .openapi("AnalyzeScoreResponse");
+
 const ScoreParamsSchema = z.object({
   score_id: z
     .string()
@@ -128,14 +140,22 @@ const ScoreJobSchema = z
     score_id: z.string().openapi({
       example: "score_20260520124530_a1b2c3d4e5f6",
     }),
-    status: z.enum(["created", "queued", "processing_omr", "needs_review", "failed"]).openapi({
-      example: "needs_review",
-    }),
+    status: z
+      .enum(["created", "queued", "processing_omr", "needs_review", "analyzed", "failed"])
+      .openapi({
+        example: "needs_review",
+      }),
     original_key: z.string().openapi({
       example: "scores/score_20260520124530_a1b2c3d4e5f6/original.pdf",
     }),
     musicxml_key: z.string().optional().openapi({
       example: "scores/score_20260520124530_a1b2c3d4e5f6/result.musicxml",
+    }),
+    notes_json_key: z.string().optional().openapi({
+      example: "scores/score_20260520124530_a1b2c3d4e5f6/notes.json",
+    }),
+    pitch_counts_key: z.string().optional().openapi({
+      example: "scores/score_20260520124530_a1b2c3d4e5f6/pitch_counts.json",
     }),
     error_message: z.string().nullable().optional().openapi({
       example: null,
@@ -148,21 +168,6 @@ const ScoreJobSchema = z
     }),
   })
   .openapi("ScoreJob");
-
-const healthRoute = createRoute({
-  method: "get",
-  path: "/",
-  responses: {
-    200: {
-      content: {
-        "application/json": {
-          schema: HealthResponseSchema,
-        },
-      },
-      description: "Service health response.",
-    },
-  },
-});
 
 const createUploadUrlRoute = createRoute({
   method: "post",
@@ -302,6 +307,27 @@ const putMusicXmlRoute = createRoute({
   },
 });
 
+const analyzeScoreRoute = createRoute({
+  method: "post",
+  path: "/scores/{score_id}/analyze",
+  request: {
+    params: ScoreParamsSchema,
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: AnalyzeScoreResponseSchema,
+        },
+      },
+      description: "Analyzed MusicXML pitch counts.",
+    },
+    400: errorResponse("Invalid MusicXML."),
+    404: errorResponse("Score or MusicXML not found."),
+    500: errorResponse("Unexpected server error."),
+  },
+});
+
 export function createApp({ scoreService }: AppDependencies) {
   const app = new OpenAPIHono({
     defaultHook: (result, c) => {
@@ -310,8 +336,6 @@ export function createApp({ scoreService }: AppDependencies) {
       }
     },
   });
-
-  app.openapi(healthRoute, (c) => c.json({ ok: true, service: "tone-mark-api" }));
 
   app.openapi(createUploadUrlRoute, async (c) => {
     const result = await scoreService.createUploadUrl(c.req.valid("json"));
@@ -357,6 +381,19 @@ export function createApp({ scoreService }: AppDependencies) {
     const result = await scoreService.putMusicXml(scoreId, await c.req.text());
     if (!result.ok) {
       const status = result.error === "Score not found." ? 404 : 400;
+      return c.json({ error: result.error }, status);
+    }
+
+    return c.json(result.value, 200);
+  });
+
+  app.openapi(analyzeScoreRoute, async (c) => {
+    const { score_id: scoreId } = c.req.valid("param");
+    // NOTE: This MVP endpoint uses a lightweight MusicXML parser. For robust
+    // score semantics, move analysis into the worker with Python music21.
+    const result = await scoreService.analyzeScore(scoreId);
+    if (!result.ok) {
+      const status = result.error === "Invalid MusicXML." ? 400 : 404;
       return c.json({ error: result.error }, status);
     }
 

@@ -3,18 +3,6 @@ import test from "node:test";
 import { createApp } from "./app.js";
 import type { ScoreJob, ScoreService } from "./score-service.js";
 
-test("GET / returns health payload", async () => {
-  const { app } = createApp({ scoreService: createMockScoreService() });
-
-  const response = await app.request("/");
-
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    ok: true,
-    service: "tone-mark-api",
-  });
-});
-
 test("GET /doc returns OpenAPI document", async () => {
   const { app } = createApp({ scoreService: createMockScoreService() });
 
@@ -31,6 +19,7 @@ test("GET /doc returns OpenAPI document", async () => {
   assert.ok(body.paths["/scores/{score_id}"]);
   assert.ok(body.paths["/scores/{score_id}/musicxml-url"]);
   assert.ok(body.paths["/scores/{score_id}/musicxml"]);
+  assert.ok(body.paths["/scores/{score_id}/analyze"]);
 });
 
 test("GET /ui returns Swagger UI HTML", async () => {
@@ -220,6 +209,70 @@ test("PUT /scores/:score_id/musicxml returns saved MusicXML payload", async () =
   });
 });
 
+test("POST /scores/:score_id/analyze returns pitch counts", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  const response = await app.request("/scores/score_20260520124530_a1b2c3d4e5f6/analyze", {
+    method: "POST",
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    score_id: "score_20260520124530_a1b2c3d4e5f6",
+    status: "analyzed",
+    notes_json_key: "scores/score_20260520124530_a1b2c3d4e5f6/notes.json",
+    pitch_counts_key: "scores/score_20260520124530_a1b2c3d4e5f6/pitch_counts.json",
+    pitch_counts: {
+      C4: 2,
+      C5: 1,
+    },
+  });
+});
+
+test("POST /scores/:score_id/analyze returns 404 when MusicXML is missing", async () => {
+  const { app } = createApp({
+    scoreService: createMockScoreService({
+      async analyzeScore() {
+        return {
+          ok: false,
+          error: "MusicXML not found.",
+        };
+      },
+    }),
+  });
+
+  const response = await app.request("/scores/score_20260520124530_a1b2c3d4e5f6/analyze", {
+    method: "POST",
+  });
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), {
+    error: "MusicXML not found.",
+  });
+});
+
+test("POST /scores/:score_id/analyze returns 400 for invalid MusicXML", async () => {
+  const { app } = createApp({
+    scoreService: createMockScoreService({
+      async analyzeScore() {
+        return {
+          ok: false,
+          error: "Invalid MusicXML.",
+        };
+      },
+    }),
+  });
+
+  const response = await app.request("/scores/score_20260520124530_a1b2c3d4e5f6/analyze", {
+    method: "POST",
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    error: "Invalid MusicXML.",
+  });
+});
+
 function createMockScoreService(overrides: Partial<ScoreService> = {}): ScoreService {
   return {
     async createUploadUrl(input) {
@@ -295,6 +348,21 @@ function createMockScoreService(overrides: Partial<ScoreService> = {}): ScoreSer
           score_id: scoreId,
           status: "needs_review",
           musicxml_key: `scores/${scoreId}/result.musicxml`,
+        },
+      };
+    },
+    async analyzeScore(scoreId) {
+      return {
+        ok: true,
+        value: {
+          score_id: scoreId,
+          status: "analyzed",
+          notes_json_key: `scores/${scoreId}/notes.json`,
+          pitch_counts_key: `scores/${scoreId}/pitch_counts.json`,
+          pitch_counts: {
+            C4: 2,
+            C5: 1,
+          },
         },
       };
     },
