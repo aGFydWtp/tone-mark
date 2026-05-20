@@ -3,3 +3,5 @@ cdk.out/
 .env
 .env.*
 !.env.example
+sample-pdf/*
+!sample-pdf/.gitkeep
