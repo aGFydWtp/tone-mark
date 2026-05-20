@@ -21,10 +21,14 @@ export class ToneMarkStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
+    // S3 bucket CORS. The HTTP API's CORS is handled by the Hono cors
+    // middleware in the API Lambda, which supports here.now subdomains.
     const allowedOrigins = [
       "http://localhost:3000",
       "http://localhost:5173",
       "http://localhost:5174",
+      "https://here.now",
+      "https://*.here.now",
     ];
 
     const scoreBucket = new s3.Bucket(this, "ScoreBucket", {
@@ -158,17 +162,6 @@ export class ToneMarkStack extends cdk.Stack {
     const httpApi = new apigwv2.HttpApi(this, "HttpApi", {
       apiName: "tone-mark-api",
       defaultIntegration: apiIntegration,
-      corsPreflight: {
-        allowHeaders: ["content-type", "authorization"],
-        allowMethods: [
-          apigwv2.CorsHttpMethod.GET,
-          apigwv2.CorsHttpMethod.POST,
-          apigwv2.CorsHttpMethod.PUT,
-          apigwv2.CorsHttpMethod.DELETE,
-          apigwv2.CorsHttpMethod.OPTIONS,
-        ],
-        allowOrigins: allowedOrigins,
-      },
     });
 
     new cdk.CfnOutput(this, "ApiEndpoint", {

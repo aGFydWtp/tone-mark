@@ -273,6 +273,43 @@ test("POST /scores/:score_id/analyze returns 400 for invalid MusicXML", async ()
   });
 });
 
+test("CORS preflight allows here.now, its subdomains, and localhost", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  for (const origin of [
+    "https://here.now",
+    "https://app.here.now",
+    "https://a.b.here.now",
+    "http://localhost:5173",
+  ]) {
+    const response = await app.request("/scores", {
+      method: "OPTIONS",
+      headers: {
+        Origin: origin,
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+
+    assert.equal(response.headers.get("access-control-allow-origin"), origin);
+  }
+});
+
+test("CORS rejects disallowed origins", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  for (const origin of ["https://evil.example", "https://here.now.evil.com", "http://here.now"]) {
+    const response = await app.request("/scores", {
+      method: "OPTIONS",
+      headers: {
+        Origin: origin,
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+
+    assert.equal(response.headers.get("access-control-allow-origin"), null);
+  }
+});
+
 function createMockScoreService(overrides: Partial<ScoreService> = {}): ScoreService {
   return {
     async createUploadUrl(input) {

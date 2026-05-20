@@ -1,11 +1,21 @@
 import { swaggerUI } from "@hono/swagger-ui";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { handle } from "hono/aws-lambda";
+import { cors } from "hono/cors";
 import type { ScoreService } from "./score-service.js";
 
 type AppDependencies = {
   scoreService: ScoreService;
 };
+
+const staticAllowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "https://here.now",
+];
+// Any subdomain of here.now over https, e.g. https://app.here.now.
+const hereNowSubdomain = /^https:\/\/([a-z0-9-]+\.)+here\.now$/;
 
 const ErrorSchema = z
   .object({
@@ -355,6 +365,15 @@ export function createApp({ scoreService }: AppDependencies) {
     },
   });
 
+  app.use(
+    "*",
+    cors({
+      origin: resolveAllowedOrigin,
+      allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      allowHeaders: ["content-type", "authorization"],
+    }),
+  );
+
   app.openapi(createUploadUrlRoute, async (c) => {
     const result = await scoreService.createUploadUrl(c.req.valid("json"));
     if (!result.ok) {
@@ -438,6 +457,13 @@ export function createApp({ scoreService }: AppDependencies) {
     app,
     handler: handle(app),
   };
+}
+
+function resolveAllowedOrigin(origin: string): string {
+  if (staticAllowedOrigins.includes(origin)) {
+    return origin;
+  }
+  return hereNowSubdomain.test(origin) ? origin : "";
 }
 
 function errorResponse(description: string) {
