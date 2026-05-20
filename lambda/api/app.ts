@@ -172,6 +172,9 @@ const ScoreJobSchema = z
 const createUploadUrlRoute = createRoute({
   method: "post",
   path: "/scores/upload-url",
+  summary: "Issue a presigned S3 upload URL",
+  description:
+    "Generates a new `score_id`, creates its job record with status `created`, and returns a presigned S3 URL for uploading the original score file directly to S3 via HTTP PUT. The URL expires in 15 minutes. Accepted content types: `application/pdf`, `image/png`, `image/jpeg`.",
   request: {
     body: {
       content: {
@@ -199,6 +202,9 @@ const createUploadUrlRoute = createRoute({
 const createScoreJobRoute = createRoute({
   method: "post",
   path: "/scores",
+  summary: "Create an OMR job for an uploaded score",
+  description:
+    "Call this after the original file has been uploaded with the presigned URL. Moves the job to status `queued` and enqueues an Audiveris OMR job on SQS. `original_key` must be located under `scores/{score_id}/`.",
   request: {
     body: {
       content: {
@@ -226,6 +232,9 @@ const createScoreJobRoute = createRoute({
 const getScoreJobRoute = createRoute({
   method: "get",
   path: "/scores/{score_id}",
+  summary: "Get score job status and metadata",
+  description:
+    "Returns the full job record for a score: current `status`, S3 object keys (original file, MusicXML, analysis JSON), timestamps, and any `error_message`. Poll this endpoint to track OMR and analysis progress.",
   request: {
     params: ScoreParamsSchema,
   },
@@ -246,6 +255,9 @@ const getScoreJobRoute = createRoute({
 const createMusicXmlDownloadUrlRoute = createRoute({
   method: "get",
   path: "/scores/{score_id}/musicxml-url",
+  summary: "Get a download URL for the generated MusicXML",
+  description:
+    "Returns a short-lived (15 minute) presigned S3 URL for downloading the MusicXML produced by OMR. Available only once OMR has finished and the job has a `musicxml_key`; responds 404 otherwise.",
   request: {
     params: ScoreParamsSchema,
   },
@@ -266,6 +278,9 @@ const createMusicXmlDownloadUrlRoute = createRoute({
 const putMusicXmlRoute = createRoute({
   method: "put",
   path: "/scores/{score_id}/musicxml",
+  summary: "Save reviewed or edited MusicXML",
+  description:
+    "Uploads the (optionally user-corrected) MusicXML for a score. The request body is the raw MusicXML document — a `<score-partwise>` or `<score-timewise>` root element. Stores it to S3 and sets the job status to `needs_review`.",
   request: {
     params: ScoreParamsSchema,
     body: {
@@ -310,6 +325,9 @@ const putMusicXmlRoute = createRoute({
 const analyzeScoreRoute = createRoute({
   method: "post",
   path: "/scores/{score_id}/analyze",
+  summary: "Analyze MusicXML and compute pitch counts",
+  description:
+    "Parses the score's stored MusicXML, extracts every pitched note, and aggregates per-pitch occurrence counts (such as `C4` or `D#5`). Persists `notes.json` and `pitch_counts.json` to S3, sets the job status to `analyzed`, and returns the pitch counts inline in the response body. Requires that MusicXML has already been saved. MVP note: analysis uses a lightweight regex-based MusicXML parser.",
   request: {
     params: ScoreParamsSchema,
   },
