@@ -3,6 +3,7 @@ FROM --platform=linux/amd64 ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG AUDIVERIS_VERSION=5.10.2
+ARG TESSDATA_VERSION=4.1.0
 
 # Runtime deps (Python, Tesseract OCR, fonts) plus build deps for awslambdaric.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,6 +13,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       tesseract-ocr tesseract-ocr-eng \
       g++ make cmake autoconf libtool libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Audiveris requests Tesseract's legacy OCR engine, but Ubuntu's tesseract-ocr-eng
+# ships LSTM-only data. Replace it with the combined legacy+LSTM traineddata so
+# text recognition (titles, lyrics, directions) works.
+RUN curl -fsSL -o /usr/share/tesseract-ocr/5/tessdata/eng.traineddata \
+      "https://github.com/tesseract-ocr/tessdata/raw/${TESSDATA_VERSION}/eng.traineddata"
 
 # AWS Lambda Runtime Interface Client — required because this is a custom base image.
 RUN pip3 install --break-system-packages --no-cache-dir awslambdaric boto3
