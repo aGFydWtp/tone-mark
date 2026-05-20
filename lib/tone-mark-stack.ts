@@ -114,6 +114,7 @@ export class ToneMarkStack extends cdk.Stack {
     });
 
     const workerFunction = new lambda.DockerImageFunction(this, "WorkerFunction", {
+      architecture: lambda.Architecture.ARM_64,
       code: lambda.DockerImageCode.fromImageAsset(path.join(projectRoot, "lambda/worker")),
       timeout: workerTimeout,
       memorySize: 3072,
