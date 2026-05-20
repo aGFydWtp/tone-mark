@@ -4,6 +4,7 @@ import * as cdk from "aws-cdk-lib";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import { Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as eventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
@@ -114,8 +115,10 @@ export class ToneMarkStack extends cdk.Stack {
     });
 
     const workerFunction = new lambda.DockerImageFunction(this, "WorkerFunction", {
-      architecture: lambda.Architecture.ARM_64,
-      code: lambda.DockerImageCode.fromImageAsset(path.join(projectRoot, "lambda/worker")),
+      architecture: lambda.Architecture.X86_64,
+      code: lambda.DockerImageCode.fromImageAsset(path.join(projectRoot, "lambda/worker"), {
+        platform: Platform.LINUX_AMD64,
+      }),
       timeout: workerTimeout,
       memorySize: 3072,
       ephemeralStorageSize: cdk.Size.gibibytes(10),
