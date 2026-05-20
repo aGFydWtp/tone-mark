@@ -1,8 +1,8 @@
-import { Hono } from "hono";
-import { handle } from "hono/aws-lambda";
+import { createApp } from "./app.js";
+import { createAwsScoreService } from "./score-service.js";
 
-const app = new Hono();
+const app = createApp({
+  scoreService: createAwsScoreService(),
+});
 
-app.get("/", (c) => c.json({ ok: true, service: "tone-mark-api" }));
-
-export const handler = handle(app);
+export const handler = app.handler;

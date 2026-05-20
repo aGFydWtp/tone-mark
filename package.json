@@ -11,15 +11,25 @@
     "deploy": "cdk deploy",
     "lint": "biome lint .",
     "format": "biome format --write .",
-    "check": "biome check ."
+    "check": "biome check .",
+    "test": "tsx --test 'lambda/**/*.test.ts'"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1050.0",
+    "@aws-sdk/client-s3": "^3.1050.0",
+    "@aws-sdk/client-sqs": "^3.1050.0",
+    "@aws-sdk/lib-dynamodb": "^3.1050.0",
+    "@aws-sdk/s3-request-presigner": "^3.1050.0",
+    "@hono/swagger-ui": "^0.6.1",
+    "@hono/zod-openapi": "^1.4.0",
     "aws-cdk-lib": "^2.220.0",
     "constructs": "^10.4.2",
-    "hono": "^4.9.12"
+    "hono": "^4.9.12",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.2.6",
+    "@biomejs/biome": "2.4.15",
+    "@types/aws-lambda": "^8.10.161",
     "@types/node": "^24.9.1",
     "aws-cdk": "^2.1030.0",
     "esbuild": "^0.25.11",

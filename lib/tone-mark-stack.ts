@@ -108,6 +108,7 @@ export class ToneMarkStack extends cdk.Stack {
         MARK_GENERATION_QUEUE_URL: markGenerationQueue.queueUrl,
       },
       bundling: {
+        externalModules: [],
         target: "node24",
       },
     });

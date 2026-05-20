@@ -1,0 +1,179 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createApp } from "./app.js";
+import type { ScoreJob, ScoreService } from "./score-service.js";
+
+test("GET / returns health payload", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  const response = await app.request("/");
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    service: "tone-mark-api",
+  });
+});
+
+test("GET /doc returns OpenAPI document", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  const response = await app.request("/doc");
+  const body = (await response.json()) as {
+    openapi: string;
+    paths: Record<string, unknown>;
+  };
+
+  assert.equal(response.status, 200);
+  assert.equal(body.openapi, "3.0.0");
+  assert.ok(body.paths["/scores/upload-url"]);
+  assert.ok(body.paths["/scores"]);
+  assert.ok(body.paths["/scores/{score_id}"]);
+});
+
+test("GET /ui returns Swagger UI HTML", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  const response = await app.request("/ui");
+  const body = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /text\/html/);
+  assert.match(body, /SwaggerUIBundle/);
+  assert.match(body, /\/doc/);
+});
+
+test("POST /scores/upload-url rejects unsupported content type", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  const response = await app.request("/scores/upload-url", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      filename: "score.gif",
+      content_type: "image/gif",
+    }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    error: "content_type must be application/pdf, image/png, or image/jpeg.",
+  });
+});
+
+test("POST /scores/upload-url returns upload URL payload", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  const response = await app.request("/scores/upload-url", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      filename: "score.pdf",
+      content_type: "application/pdf",
+    }),
+  });
+
+  const body = (await response.json()) as {
+    score_id: string;
+    object_key: string;
+    upload_url: string;
+  };
+
+  assert.equal(response.status, 200);
+  assert.match(body.score_id, /^score_/);
+  assert.match(body.object_key, /^scores\/score_.+\/original\.pdf$/);
+  assert.equal(body.upload_url, "https://example.com/upload");
+});
+
+test("POST /scores rejects mismatched score_id and original_key", async () => {
+  const { app } = createApp({ scoreService: createMockScoreService() });
+
+  const response = await app.request("/scores", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      score_id: "score_20260520124530_a1b2c3d4e5f6",
+      original_key: "scores/other/original.pdf",
+    }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    error: "original_key must belong to score_id.",
+  });
+});
+
+test("GET /scores/:score_id returns 404 when score is missing", async () => {
+  const { app } = createApp({
+    scoreService: createMockScoreService({
+      getScoreJob: async () => null,
+    }),
+  });
+
+  const response = await app.request("/scores/score_missing");
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), {
+    error: "Score not found.",
+  });
+});
+
+function createMockScoreService(overrides: Partial<ScoreService> = {}): ScoreService {
+  return {
+    async createUploadUrl(input) {
+      if (input.content_type !== "application/pdf") {
+        return {
+          ok: false,
+          error: "content_type must be application/pdf, image/png, or image/jpeg.",
+        };
+      }
+
+      const scoreId = "score_20260520124530_a1b2c3d4e5f6";
+
+      return {
+        ok: true,
+        value: {
+          score_id: scoreId,
+          upload_url: "https://example.com/upload",
+          object_key: `scores/${scoreId}/original.pdf`,
+        },
+      };
+    },
+    async createScoreJob(input) {
+      const scoreId = String(input.score_id);
+      const originalKey = String(input.original_key);
+      if (!originalKey.startsWith(`scores/${scoreId}/`)) {
+        return {
+          ok: false,
+          error: "original_key must belong to score_id.",
+        };
+      }
+
+      return {
+        ok: true,
+        value: {
+          score_id: scoreId,
+          status: "queued",
+        },
+      };
+    },
+    async getScoreJob(scoreId) {
+      return {
+        pk: `SCORE#${scoreId}`,
+        sk: "META",
+        score_id: scoreId,
+        status: "created",
+        original_key: `scores/${scoreId}/original.pdf`,
+        created_at: "2026-05-20T00:00:00.000Z",
+        updated_at: "2026-05-20T00:00:00.000Z",
+      } satisfies ScoreJob;
+    },
+    ...overrides,
+  };
+}
