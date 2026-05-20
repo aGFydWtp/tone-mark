@@ -1,0 +1,6 @@
+{
+  "app": "pnpm tsx bin/tone-mark.ts",
+  "context": {
+    "@aws-cdk/core:newStyleStackSynthesis": true
+  }
+}
